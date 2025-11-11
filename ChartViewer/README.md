@@ -1,5 +1,5 @@
 ## 개요
-MCU ADC 측정 값을 선 차트로 시각화하기 위한 [Processing](https://processing.org) 응용 프로그램 입니다.
+MCU ADC 측정 값을 라인 차트로 시각화하기 위한 [Processing](https://processing.org) 응용 프로그램 입니다.
 
 ## 주요 기능
 - 직렬 통신 장치 열거 및 선택
