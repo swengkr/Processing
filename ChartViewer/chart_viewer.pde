@@ -1,29 +1,36 @@
 import processing.serial.*;
 
-// --- 시리얼 및 포트 설정 변수 ---
 Serial myPort;
 String targetPort = "";
 int baudRate = 115200; 
 
-// --- 그래프 설정 변수 (기존 유지)
 int maxADC = 4095; 
 int minY = 50;
 int maxY;
-int yAxisWidth = 50;
+final int yAxisWidth = 50;
 int toolbarLeft = 0;
 
-// 데이터 누적 및 스크롤 관련 변수 (기존 유지)
+// 데이터 누적 및 스크롤 관련 변수
 ArrayList<Integer> history;
-int dataPointSpacing = 2;
+ArrayList<Integer> historyTime; // 시간 기록 리스트 추가
+int pointSpacing = 3;
 int maxVisiblePoints;
-final int NOISE_THRESHOLD = 20;
+final int kNoiseThreshold = 20;
 
-// 마우스 스크롤 및 차트 상태 변수 (기존 유지)
+// 마우스 스크롤 및 차트 상태 변수
 int currentStartIndex = 0;
 int mouseX_prev = 0;
-boolean isMouseDragging = false;
+boolean isChartDragging = false;
 boolean chartPaused = false; 
 boolean isConnected = false; 
+
+// 툴팁 관련 변수 추가
+int hoverValue = -1;
+int hoverIndex = -1;
+float hoverX = -1;
+float hoverY = -1;
+int pointDiameter = 5; // 점의 지름 설정
+int beginTime = 0;
 
 // 버튼 및 콤보 박스 관련 변수
 Button connectButton;    // [시작/중지] 버튼
@@ -36,65 +43,72 @@ ComboBox baudRateComboBox;
 int buttonHeight = 30;
 int buttonY = 10;
 int buttonSpacing = 10;
-int buttonWidth = 100;
+int buttonWidth = 80;
 
 // 해상도 선택지
-String[] maxADC_options = {"256", "512", "1024", "2048", "4096", "8192"};
+String[] maxADC_options = {"1024", "2048", "4096", "8192"};
 int initialResolutionIndex = 0;
 
 // 포트 및 보드레이트 옵션
 String[] availablePorts;
-String[] baudRateOptions = {"9600", "115200"};
+String[] baudRateOptions = {"1200","2400","9600","19200","57600","115200"};
 
+PImage imgCursor;
+long lastClickTime = 0;
+final int kDoubleClickTime = 250; // 밀리초(ms)
 
 void setup() {
   size(1600, 800);
-  textFont(createFont("Gulim", 16)); 
-  
+  textFont(createFont("Gulim", 16));
+  imgCursor = loadImage("cursor.png"); 
+
+  surface.setTitle("Chart Viewer V0.1");
+
   maxY = height - 30;
   strokeWeight(2);
   
   history = new ArrayList<Integer>();
-  maxVisiblePoints = (width - yAxisWidth) / dataPointSpacing;
+  historyTime = new ArrayList<Integer>();
+  maxVisiblePoints = (width - yAxisWidth) / pointSpacing;
   
-  // 1. COM 포트 목록 가져오기
+  // COM 포트 목록 가져오기
   availablePorts = Serial.list();
   if (availablePorts.length == 0) {
       availablePorts = new String[]{"N/A"};
   }
 
-  // 2. UI 요소 초기화 및 오른쪽 정렬
+  // UI 요소 초기화 및 오른쪽 정렬
   toolbarLeft = width - buttonSpacing;
   
-  // 2-1. [초기화] 버튼
+  // [초기화] 버튼
   toolbarLeft -= buttonWidth;
   resetButton = new Button("초기화", toolbarLeft, buttonY, buttonWidth, buttonHeight, color(255, 100, 100));
   toolbarLeft -= buttonSpacing;
   
-  // 2-2. [계속] 버튼
+  // [계속] 버튼
   toolbarLeft -= buttonWidth;
   continueButton = new Button("계속", toolbarLeft, buttonY, buttonWidth, buttonHeight, color(100, 200, 100));
   toolbarLeft -= buttonSpacing;
 
-  // 2-3. [해상도] ComboBox
-  int comboWidth = buttonWidth + 30;
+  // [해상도] ComboBox
+  int comboWidth = buttonWidth + 50;
   toolbarLeft -= comboWidth;
   resolutionComboBox = new ComboBox(toolbarLeft, buttonY, comboWidth, buttonHeight, maxADC_options, initialResolutionIndex);
   toolbarLeft -= buttonSpacing;
   
-  // 2-4. [시작]/[중지] 버튼
+  // [시작]/[중지] 버튼
   toolbarLeft -= buttonWidth + 50;
   connectButton = new Button("시작", toolbarLeft, buttonY, buttonWidth, buttonHeight, color(0, 150, 0));
   toolbarLeft -= buttonSpacing;
   
-  // 2-5. 통신속도 ComboBox
-  comboWidth = buttonWidth + 30;
+  // 통신속도 ComboBox
+  comboWidth = buttonWidth + 50;
   toolbarLeft -= comboWidth;
   baudRateComboBox = new ComboBox(toolbarLeft, buttonY, comboWidth, buttonHeight, baudRateOptions, 1);
   toolbarLeft -= buttonSpacing;
   
-  // 2-6. COM 포트 ComboBox
-  comboWidth = buttonWidth + 30;
+  // COM 포트 ComboBox
+  comboWidth = buttonWidth + 50;
   toolbarLeft -= comboWidth;
   comPortComboBox = new ComboBox(toolbarLeft, buttonY, comboWidth, buttonHeight, availablePorts, 0);
 
@@ -107,17 +121,20 @@ void setup() {
 void draw() {
   background(0);
   
-  // 1. 그리드 및 축 그리기
+  // 그리드 및 축 그리기
   drawGridAndAxes();
 
-  // 2. 누적된 데이터 그래프 그리기
+  // 누적된 데이터 그래프 그리기
   strokeWeight(2);
   drawDataChart();
 
-  // 3. 버튼 및 콤보 박스 그리기
+  // 버튼 및 콤보 박스 그리기
   drawButtons();
+  
+  // 툴팁 그리기 (마지막에 그려서 다른 요소 위에 표시되도록 함)
+  drawTooltip();
 
-  // 4. 차트 정지 상태 표시
+  // 차트 정지 상태 표시
   if (chartPaused && isConnected) {
     float prevSize = g.textSize;
     noStroke();
@@ -136,7 +153,66 @@ void draw() {
   }
 }
 
-// 콤보 박스 클래스 정의 (기존 유지)
+// 마우스 휠 이벤트 처리 함수 추가
+void mouseWheel(MouseEvent event) {
+    pointSpacing = constrain(pointSpacing + (-event.getCount()), 3, 20);
+}
+
+// 툴팁 그리기 함수 수정
+void drawTooltip() {
+    if (hoverValue != -1) {
+        // 캡처 시간(ms)을 시:분:초.ms 형식으로 변환
+        long capturedTimeMs = historyTime.get(hoverIndex) - beginTime;
+        long totalSeconds = capturedTimeMs / 1000;
+        int hours = (int) (totalSeconds / 3600);
+        int minutes = (int) ((totalSeconds % 3600) / 60);
+        int seconds = (int) (totalSeconds % 60);
+        int milliseconds = (int) (capturedTimeMs % 1000);
+        
+        // 시:분:초 형식의 텍스트 생성 (nf는 0으로 채워주는 함수)
+        String timeText = nf(hours, 2) + ":" + nf(minutes, 2) + ":" + nf(seconds, 2) + "." + nf(milliseconds, 3);
+        String valueText = "값: " + hoverValue;
+        
+        String tooltipText = timeText + "\n" + valueText;
+        
+        // 툴팁 배경 크기 계산
+        float padding = 10;
+        // 가장 긴 텍스트를 기준으로 폭 계산
+        float textW = max(textWidth(timeText), textWidth(valueText));
+        float textH = 2 * (textAscent() + textDescent()); // 두 줄이므로 높이는 두 배
+        float tooltipW = textW + 2 * padding;
+        float tooltipH = textH + 2 * padding;
+        
+        // 툴팁 위치 조정
+        float x = hoverX + pointDiameter / 2 + 5; // 점 오른쪽으로 약간 이동
+        float y = hoverY - tooltipH / 2;
+        
+        // 화면 경계 체크
+        if (x + tooltipW > width) x = hoverX - tooltipW - pointDiameter / 2 - 5;
+        if (y < 0) y = 0;
+        if (y + tooltipH > height) y = height - tooltipH;
+
+        // 배경
+        noStroke();
+        fill(50, 50, 50, 200); // 반투명한 회색
+        rect(x, y, tooltipW, tooltipH, 5); // 둥근 모서리
+
+        // 텍스트
+        fill(255);
+        textAlign(LEFT, TOP);
+        textSize(14);
+        text(tooltipText, x + padding, y + padding);
+        
+        // 하이라이트 점 그리기 (선택된 점을 강조)
+        stroke(255, 255, 0); // 노란색 테두리
+        strokeWeight(2);
+        noFill();
+        ellipse(hoverX, hoverY, pointDiameter + 4, pointDiameter + 4);
+    }
+}
+
+
+// 콤보 박스 클래스 정의
 class ComboBox {
   float x, y, w, h;
   String[] options;
@@ -231,6 +307,7 @@ class ComboBox {
                if (maxADC != oldMaxADC) {
                   // 해상도 변경 시 데이터 초기화 및 실시간 모드 강제 전환
                   history.clear(); 
+                  historyTime.clear();
                   currentStartIndex = 0;
                   chartPaused = false; 
               }
@@ -244,7 +321,7 @@ class ComboBox {
   }
 }
 
-// 버튼 클래스 정의 (기존 유지)
+// 버튼 클래스 정의
 class Button {
   String label;
   float x, y, w, h;
@@ -314,7 +391,13 @@ void drawButtons() {
   connectButton.display();
   continueButton.display();
   resetButton.display();
-  
+
+  if (isChartDragging) {
+    cursor(imgCursor);
+  } else {
+    cursor(ARROW);
+  }
+
   strokeWeight(2);
   stroke(255);
 }
@@ -359,9 +442,11 @@ void toggleSerialConnection() {
             myPort.clear();
             myPort.bufferUntil('\n');
             history.clear();
+            historyTime.clear(); // 연결 시 시간 리스트도 초기화
             currentStartIndex = 0;
             isConnected = true;
             chartPaused = false; // 연결 성공 시 실시간 캡처 시작
+            beginTime = millis();
         } catch (Exception e) {
             myPort = null;
             isConnected = false;
@@ -370,17 +455,12 @@ void toggleSerialConnection() {
     }
 }
 
-long lastClickTime = 0;
-final int DOUBLE_CLICK_TIME = 250; // 밀리초(ms), 250ms 이내 두 번 클릭 시 더블 클릭으로 간주
-
 void handleDoubleClick() {
   chartPaused ^= true;
 }
 
-// mousePressed() 함수 수정
 void mousePressed() {
-  
-  // 1. 콤보 박스 클릭 처리 
+  // 콤보 박스 클릭 처리 
   ComboBox[] allBoxes = {resolutionComboBox, comPortComboBox, baudRateComboBox};
   boolean boxClicked = false;
 
@@ -388,8 +468,8 @@ void mousePressed() {
   if (mouseButton == LEFT) {
     long currentTime = millis();
     
-    // 현재 시간과 이전 클릭 시간의 차이가 DOUBLE_CLICK_TIME보다 작으면 더블 클릭
-    if (currentTime - lastClickTime < DOUBLE_CLICK_TIME) {
+    // 현재 시간과 이전 클릭 시간의 차이가 kDoubleClickTime보다 작으면 더블 클릭
+    if (currentTime - lastClickTime < kDoubleClickTime) {
       // 더블 클릭 함수 호출
       handleDoubleClick();
       
@@ -430,7 +510,7 @@ void mousePressed() {
   }
 
 
-  // 2. 버튼 클릭 처리
+  // 버튼 클릭 처리
   if (connectButton.isMouseOver()) {
     toggleSerialConnection();
     return;
@@ -452,33 +532,33 @@ void mousePressed() {
   
   if (resetButton.isMouseOver()) {
     history.clear();
+    historyTime.clear(); // 초기화 시 시간 리스트도 초기화
     currentStartIndex = 0;
     // 초기화 후 연결된 경우 실시간 모드로, 아니면 PAUSED 상태 유지
     chartPaused = isConnected ? false : true; 
     return;
   }
   
-  // 3. 차트 영역 드래그 준비: 마우스 왼쪽 버튼(LEFT)인 경우에만 준비
+  // 차트 영역 드래그 준비: 마우스 왼쪽 버튼(LEFT)인 경우에만 준비
   if (mouseY > minY && mouseButton == LEFT) { 
     mouseX_prev = mouseX;
-    isMouseDragging = true;
+    isChartDragging = true;
   }
 }
 
-// 마우스 버튼을 놓을 때 호출됨 (기존과 동일)
+// 마우스 버튼을 놓을 때 호출됨
 void mouseReleased() {
-  isMouseDragging = false;
+  isChartDragging = false;
 }
 
-// mouseDragged() 함수 (기존과 동일: 드래그 시 PAUSED)
 void mouseDragged() {
-  if (!isMouseDragging || mouseY < minY) return;
+  if (!isChartDragging || mouseY < minY) return;
   
   // 드래그가 시작되는 순간 PAUSED 모드 설정
   chartPaused = true; 
 
   int deltaX = mouseX - mouseX_prev;
-  int deltaPoints = round((float)deltaX / dataPointSpacing);
+  int deltaPoints = round((float)deltaX / pointSpacing);
   
   currentStartIndex -= deltaPoints;
   
@@ -488,7 +568,6 @@ void mouseDragged() {
   
   mouseX_prev = mouseX;
 }
-
 
 void drawGridAndAxes() {
   // 그리드 및 축 그리기
@@ -529,6 +608,10 @@ void drawGridAndAxes() {
 void drawDataChart() {
     if (history.isEmpty()) return;
 
+    // 툴팁 관련 변수 초기화
+    hoverValue = -1;
+    hoverIndex = -1;
+
     int startIndex = currentStartIndex;
     
     if (history.size() < maxVisiblePoints) {
@@ -545,10 +628,15 @@ void drawDataChart() {
     
     strokeWeight(2);
 
+    // 마우스 감지 거리 설정 (점 반지름 + 여유 공간)
+    float tolerance = pointDiameter / 2 + 4; 
+
+    // 1. 선 그래프를 그립니다.
     for (int i = startIndex; i < endIndex; i++) {
         int currentValue = history.get(i);
         
-        if (abs(currentValue - lastDrawnValue) > NOISE_THRESHOLD) {
+        // 튀는 값/일반 값에 따라 선 색상 결정
+        if (abs(currentValue - lastDrawnValue) > kNoiseThreshold) {
             stroke(255, 0, 0); // Red (튀는 값)
         } else {
             stroke(0, 255, 0); // Green (일반 값)
@@ -558,10 +646,43 @@ void drawDataChart() {
         int lastY = (int) map(lastDrawnValue, 0, maxADC, maxY, minY);
         
         if (i > startIndex) { 
-              line(currentX - dataPointSpacing, lastY, currentX, currentY);
+              line(currentX - pointSpacing, lastY, currentX, currentY);
         }
         
-        currentX += dataPointSpacing;
+        // 2. 툴팁을 위한 마우스 근접 확인 (선 위에 덧그리기 전에 미리 계산)
+        if (dist(mouseX, mouseY, currentX, currentY) < tolerance && 
+            !isAnyComboBoxExpanded() && mouseY > minY && mouseY < maxY) {
+             hoverValue = currentValue;
+             hoverIndex = i;
+             hoverX = currentX;
+             hoverY = currentY;
+        }
+
+        currentX += pointSpacing;
+        lastDrawnValue = currentValue;
+    }
+    
+    // 3. 점 그래프를 그립니다 (선 위에 덧그림).
+    currentX = yAxisWidth; // X 좌표를 다시 시작 위치로 초기화
+    lastDrawnValue = history.get(startIndex); // lastDrawnValue도 다시 초기화
+
+    for (int i = startIndex; i < endIndex; i++) {
+        int currentValue = history.get(i);
+        
+        // 튀는 값/일반 값에 따라 점 색상 결정
+        if (abs(currentValue - lastDrawnValue) > kNoiseThreshold) {
+            fill(255, 0, 0); // Red (튀는 값)
+        } else {
+            fill(0, 255, 0); // Green (일반 값)
+        }
+        
+        int currentY = (int) map(currentValue, 0, maxADC, maxY, minY);
+        
+        // 점(원) 그리기
+        noStroke(); // 점 테두리 제거
+        ellipse(currentX, currentY, pointDiameter, pointDiameter);
+        
+        currentX += pointSpacing;
         lastDrawnValue = currentValue;
     }
 }
@@ -579,7 +700,9 @@ void serialEvent(Serial p) {
       
       inValue = constrain(inValue, 0, maxADC);
       
+      // 데이터 값과 현재 시간(밀리초) 저장
       history.add(inValue);
+      historyTime.add(millis());
       
       if (!chartPaused) {
           if (history.size() > maxVisiblePoints) {
