@@ -11,3 +11,7 @@ MCU ADC 측정 값을 선 차트로 시각화하기 위한 [Processing](https://
 - 차트 X축(시간) 스크롤
 - 차트 X축 데이터 포인트 너비 마우스 스크롤 조정
 - 차트 데이터 초기화
+
+> 💬 이미지 클릭 시 유투브 영상 재생
+
+[![](https://github.com/swengkr/Processing/blob/main/ChartViewer/viewer.png)](https://www.youtube.com/watch?v=NDCOapL57EY)
